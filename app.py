@@ -296,7 +296,7 @@ if st.button("バックテスト実行"):
 
     display_df = result_df.copy()
 
-    st.write(f"採用候補数：{len(result_df)}銘柄")
+    st.write(f"採用候補数：{(result_df['判定'] == '採用候補').sum()}銘柄")
 
     styled_df = (
         display_df.style
