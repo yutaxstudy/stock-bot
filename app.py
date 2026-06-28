@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 from pathlib import Path
 from datetime import date, timedelta
+import altair as alt
 
 st.set_page_config(
     page_title="株バックテストアプリ",
@@ -805,8 +806,95 @@ if st.session_state["result_df"] is not None:
         chart_df["初期資金"] = INITIAL_CASH
         chart_df = chart_df.set_index("日付")
 
-        st.line_chart(
-            chart_df[["総資産", "初期資金"]]
+        chart_plot_df = (
+            chart_df
+            .reset_index()
+            .melt(
+                id_vars="日付",
+                value_vars=["総資産", "初期資金"],
+                var_name="項目",
+                value_name="金額",
+            )
+        )
+
+        start_year = chart_df.index.min().year
+        end_year = chart_df.index.max().year
+
+        year_lines_df = pd.DataFrame({
+            "日付": pd.to_datetime([
+                f"{year}-01-01"
+                for year in range(start_year, end_year + 1)
+            ])
+        })
+
+        year_lines = (
+            alt.Chart(year_lines_df)
+            .mark_rule(
+                color="gray",
+                opacity=0.5,
+                strokeWidth=1,
+                strokeDash=[4, 4],
+            )
+            .encode(
+                x=alt.X(
+                    "日付:T",
+                    axis=None,
+                )
+            )
+        )
+
+        asset_lines = (
+            alt.Chart(chart_plot_df)
+            .mark_line()
+            .encode(
+                x=alt.X(
+                    "日付:T",
+                    title="日付",
+                    axis=alt.Axis(
+                        format="%Y",
+                        tickCount={"interval": "year", "step": 1},
+                        labelAngle=0,
+                    ),
+                ),
+                y=alt.Y(
+                    "金額:Q",
+                    title="総資産（円）",
+                    axis=alt.Axis(format=",.0f"),
+                ),
+                color=alt.Color(
+                    "項目:N",
+                    title=None,
+                    legend=alt.Legend(orient="bottom"),
+                ),
+                tooltip=[
+                    alt.Tooltip(
+                        "日付:T",
+                        title="日付",
+                        format="%Y-%m-%d",
+                    ),
+                    alt.Tooltip(
+                        "項目:N",
+                        title="項目",
+                    ),
+                    alt.Tooltip(
+                        "金額:Q",
+                        title="金額",
+                        format=",.0f",
+                    ),
+                ],
+            )
+        )
+
+        asset_chart = (
+            year_lines
+            + asset_lines
+        ).properties(
+            height=420
+        ).interactive()
+
+        st.altair_chart(
+            asset_chart,
+            use_container_width=True,
         )
 
     with risk_tab:
