@@ -2,49 +2,119 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-st.title("株バックテストアプリ")
-
-stock_group = st.selectbox(
-    "銘柄グループ",
-    ["半導体","大型株","高配当","優待株"]
-    
+st.set_page_config(
+    page_title="株バックテストアプリ",
+    layout="wide"
 )
 
-leverage = st.selectbox(
-    "信用倍率",
-    [1.0, 1.3, 1.5, 2.0],
-    index=2
+st.markdown(
+    "<h1 style='text-align: center;'>株バックテストアプリ</h1>",
+    unsafe_allow_html=True
 )
 
-maintenance_rate = st.selectbox(
-    "追証発生保証金率",
-    [0.25, 0.30, 0.35],
-    index=1
-)
-forced_liquidation_rate = st.selectbox(
-    "強制決済保証金率",
-    [0.15, 0.20, 0.25],
-    index=1
-)
+# 銘柄グループ
+group_col1, group_col2, group_col3, group_col4 = st.columns(4)
 
-short_window = st.selectbox("短期移動平均", [5, 10, 25, 50], index=2)
-long_window = st.selectbox("長期移動平均", [25, 50, 75, 100, 200], index=2)
-min_return = st.selectbox("最低リターン", [0, 30, 50, 100], index=2)
-max_drawdown_limit = st.selectbox("最大下落率", [30, 40, 50, 60], index=2)
+with group_col1:
+    stock_group = st.selectbox(
+        "銘柄グループ",
+        ["半導体", "大型株", "高配当", "優待株"]
+    )
 
-min_trade_count = st.selectbox(
-    "最低取引回数",
-    [1, 3, 5, 10, 20],
-    index=2
-)
 
-max_forced_liquidation_count = st.selectbox(
-    "許容する強制決済回数",
-    [0, 1, 2, 3, 5],
-    index=0
-)
+st.markdown("### 取引の前提条件")
 
-only_adopted = st.checkbox("採用候補のみ表示")
+condition_col1, condition_col2, condition_col3, condition_col4 = st.columns(4)
+
+with condition_col1:
+    leverage = st.selectbox(
+        "信用倍率",
+        [1.0, 1.3, 1.5, 2.0],
+        index=2,
+        format_func=lambda x: f"{x:.1f}倍"
+    )
+
+with condition_col2:
+    maintenance_rate = st.selectbox(
+        "追証発生保証金率",
+        [0.25, 0.30, 0.35],
+        index=1,
+        format_func=lambda x: f"{x:.0%}"
+    )
+
+with condition_col3:
+    forced_liquidation_rate = st.selectbox(
+        "強制決済保証金率",
+        [0.15, 0.20, 0.25],
+        index=1,
+        format_func=lambda x: f"{x:.0%}"
+    )
+
+
+st.markdown("### 売買戦略")
+
+strategy_col1, strategy_col2, strategy_col3, strategy_col4 = st.columns(4)
+
+with strategy_col1:
+    short_window = st.selectbox(
+        "短期移動平均",
+        [5, 10, 25, 50],
+        index=2,
+        format_func=lambda x: f"{x}日"
+    )
+
+with strategy_col2:
+    long_window = st.selectbox(
+        "長期移動平均",
+        [25, 50, 75, 100, 200],
+        index=2,
+        format_func=lambda x: f"{x}日"
+    )
+
+
+st.markdown("### 採用条件")
+
+adopt_col1, adopt_col2, adopt_col3, adopt_col4 = st.columns(4)
+
+with adopt_col1:
+    min_return = st.selectbox(
+        "最低リターン",
+        [0, 30, 50, 100],
+        index=2,
+        format_func=lambda x: f"{x}%"
+    )
+
+with adopt_col2:
+    max_drawdown_limit = st.selectbox(
+        "最大下落率",
+        [30, 40, 50, 60],
+        index=2,
+        format_func=lambda x: f"{x}%"
+    )
+
+with adopt_col3:
+    min_trade_count = st.selectbox(
+        "最低取引回数",
+        [1, 3, 5, 10, 20],
+        index=2,
+        format_func=lambda x: f"{x}回"
+    )
+
+with adopt_col4:
+    max_forced_liquidation_count = st.selectbox(
+        "許容する強制決済回数",
+        [0, 1, 2, 3, 5],
+        index=0,
+        format_func=lambda x: f"{x}回"
+    )
+
+
+st.divider()
+
+action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+
+with action_col1:
+    only_adopted = st.checkbox("採用候補のみ表示")
 
 INITIAL_CASH = 1_000_000
 FEE_RATE = 0.001
@@ -224,7 +294,13 @@ def color_profit(val):
         pass
     return ""
 
-if st.button("バックテスト実行"):
+with action_col2:
+    run_backtest = st.button(
+        "バックテスト実行",
+        use_container_width=True
+    )
+
+if run_backtest:
     results = []
 
     for ticker in TICKERS:
@@ -308,19 +384,104 @@ if st.button("バックテスト実行"):
 
     display_df = result_df.copy()
 
-    st.write(f"採用候補数：{(result_df['判定'] == '採用候補').sum()}銘柄")
+    adopted_count = int(
+        (display_df["判定"] == "採用候補").sum()
+    )
 
-    styled_df = (
-        display_df.style
-        .map(color_profit, subset=["損益", "リターン%"])
+    st.write(f"採用候補数：{adopted_count}銘柄")
+
+
+    # 概要に表示する項目
+    overview_columns = [
+        "評価",
+        "銘柄",
+        "最終資産",
+        "損益",
+        "リターン%",
+        "取引回数",
+        "最大下落率%",
+        "判定",
+        "見送り理由",
+    ]
+
+    # 信用リスクに表示する項目
+    risk_columns = [
+        "銘柄",
+        "最低保証金率%",
+        "追証発生回数",
+        "最大追証額",
+        "強制決済回数",
+    ]
+
+    overview_df = display_df[overview_columns].copy()
+    risk_df = display_df[risk_columns].copy()
+
+
+    # 概要表の表示形式
+    overview_styled = (
+        overview_df.style
+        .map(
+            color_profit,
+            subset=["損益", "リターン%"]
+        )
         .format({
             "最終資産": "¥{:,.0f}",
             "損益": "¥{:,.0f}",
-            "最大追証額": "¥{:,.0f}",
             "リターン%": "{:.2f}",
-            "最低保証金率%": "{:.2f}",
-            "最大下落率%": "{:.2f}"
+            "最大下落率%": "{:.2f}",
         })
     )
 
-    st.dataframe(styled_df)
+
+    # 信用リスク表の表示形式
+    risk_styled = (
+        risk_df.style
+        .format({
+            "最低保証金率%": "{:.2f}",
+            "最大追証額": "¥{:,.0f}",
+        })
+    )
+
+
+    # 全項目表の表示形式
+    all_styled = (
+        display_df.style
+        .map(
+            color_profit,
+            subset=["損益", "リターン%"]
+        )
+        .format({
+            "最終資産": "¥{:,.0f}",
+            "損益": "¥{:,.0f}",
+            "リターン%": "{:.2f}",
+            "最大下落率%": "{:.2f}",
+            "最低保証金率%": "{:.2f}",
+            "最大追証額": "¥{:,.0f}",
+        })
+    )
+
+
+    overview_tab, risk_tab, all_tab = st.tabs(
+        ["概要", "信用リスク", "全項目"]
+    )
+
+    with overview_tab:
+        st.dataframe(
+            overview_styled,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with risk_tab:
+        st.dataframe(
+            risk_styled,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with all_tab:
+        st.dataframe(
+            all_styled,
+            use_container_width=True,
+            hide_index=True
+        )
