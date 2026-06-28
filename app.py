@@ -71,6 +71,9 @@ if "result_df" not in st.session_state:
 if "trade_histories_by_ticker" not in st.session_state:
     st.session_state["trade_histories_by_ticker"] = {}
 
+if "equity_curves_by_ticker" not in st.session_state:
+    st.session_state["equity_curves_by_ticker"] = {}
+
 st.markdown(
     "<h1 style='text-align: center;'>株バックテストアプリ</h1>",
     unsafe_allow_html=True
@@ -379,6 +382,12 @@ def backtest(df):
     trade_history = []
     buy_date = None
     buy_fee = 0
+    equity_history = [
+        {
+            "日付": df.index[0],
+            "総資産": INITIAL_CASH,
+        }
+    ]
 
     max_value = INITIAL_CASH
     max_drawdown = 0
@@ -519,6 +528,10 @@ def backtest(df):
                 borrowed_amount = 0
                 trade_count += 1
 
+        equity_history.append({
+            "日付": df.index[i],
+            "総資産": current_value,
+        })
 
         if current_value > max_value:
             max_value = current_value
@@ -555,7 +568,7 @@ def backtest(df):
     profit = final_value - INITIAL_CASH
     return_rate = (final_value / INITIAL_CASH - 1) * 100
 
-    return final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history
+    return final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history, equity_history
 
 def color_profit(val):
     try:
@@ -577,6 +590,7 @@ with action_col2:
 if run_backtest:
     results = []
     trade_histories_by_ticker = {}
+    equity_curves_by_ticker = {}
 
     for ticker in TICKERS:
         df = get_data(ticker)
@@ -584,8 +598,9 @@ if run_backtest:
         if df is None or df.empty:
             continue
 
-        final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history = backtest(df)
+        final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history, equity_history = backtest(df)
         trade_histories_by_ticker[ticker] = trade_history
+        equity_curves_by_ticker[ticker] = pd.DataFrame(equity_history)
         rejection_reasons = []
 
         if return_rate < min_return:
@@ -659,6 +674,7 @@ if run_backtest:
 
     st.session_state["result_df"] = result_df.copy()
     st.session_state["trade_histories_by_ticker"] = trade_histories_by_ticker.copy()
+    st.session_state["equity_curves_by_ticker"] = equity_curves_by_ticker.copy()
     if backtest_period == "期間を指定":
         st.session_state["result_period_label"] = (
         f"{custom_start_date.strftime('%Y-%m-%d')}"
@@ -671,6 +687,7 @@ if run_backtest:
 
 if st.session_state["result_df"] is not None:
     result_df = st.session_state["result_df"].copy()
+    equity_curves_by_ticker = st.session_state["equity_curves_by_ticker"]
     trade_histories_by_ticker = st.session_state["trade_histories_by_ticker"]
 
     display_df = result_df.copy()
@@ -766,6 +783,30 @@ if st.session_state["result_df"] is not None:
             overview_styled,
             use_container_width=True,
             hide_index=True
+        )
+
+    st.subheader("総資産の推移")
+
+    chart_tickers = list(equity_curves_by_ticker.keys())
+
+    if chart_tickers:
+        chart_ticker = st.selectbox(
+            "資産推移を確認する銘柄",
+            chart_tickers,
+            format_func=lambda ticker: (
+                f"{ticker} {TICKER_NAMES.get(ticker, '')}"
+            ),
+            key="equity_chart_ticker",
+        )
+
+        chart_df = equity_curves_by_ticker[chart_ticker].copy()
+
+        chart_df["日付"] = pd.to_datetime(chart_df["日付"])
+        chart_df["初期資金"] = INITIAL_CASH
+        chart_df = chart_df.set_index("日付")
+
+        st.line_chart(
+            chart_df[["総資産", "初期資金"]]
         )
 
     with risk_tab:
