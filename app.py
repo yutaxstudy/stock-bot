@@ -7,6 +7,12 @@ st.set_page_config(
     layout="wide"
 )
 
+if "result_df" not in st.session_state:
+    st.session_state["result_df"] = None
+
+if "trade_histories_by_ticker" not in st.session_state:
+    st.session_state["trade_histories_by_ticker"] = {}
+
 st.markdown(
     "<h1 style='text-align: center;'>株バックテストアプリ</h1>",
     unsafe_allow_html=True
@@ -178,6 +184,9 @@ def backtest(df):
     buy_price = 0
     borrowed_amount = 0
     trade_count = 0
+    trade_history = []
+    buy_date = None
+    buy_fee = 0
 
     max_value = INITIAL_CASH
     max_drawdown = 0
@@ -199,16 +208,29 @@ def backtest(df):
         today_long = today["MA_long"].item()
 
         if prev_short <= prev_long and today_short > today_long and shares == 0:
-            buying_power = INITIAL_CASH * leverage
-            shares = int(buying_power // (price * (1 + FEE_RATE)))
+            available_cash = cash
+            buying_power = available_cash * leverage
+            shares = int(
+                buying_power // (price * (1 + FEE_RATE))
+            )
 
             cost = shares * price
             fee = cost * FEE_RATE
+            total_purchase = cost + fee
 
-            borrowed_amount = max(cost - INITIAL_CASH, 0)
-            cash = INITIAL_CASH - fee
+            borrowed_amount = max(
+                total_purchase - available_cash,
+                0
+            )
+            cash = (
+                available_cash
+                + borrowed_amount
+                - total_purchase
+            )
 
             buy_price = price
+            buy_date = df.index[i]
+            buy_fee = fee
             trade_count += 1
 
         elif prev_short >= prev_long and today_short < today_long and shares > 0:
@@ -216,16 +238,35 @@ def backtest(df):
             fee = proceeds * FEE_RATE
             realized_profit = (price - buy_price) * shares
 
-            tax = 0
-            if realized_profit > 0:
-                tax = realized_profit * TAX_RATE
+            taxable_profit = realized_profit - buy_fee - fee
+            tax = max(taxable_profit, 0) * TAX_RATE
 
-            
+            cash = (
+                cash
+                + proceeds
+                - borrowed_amount
+                - fee
+                - tax
+            )
 
-            cash = proceeds - borrowed_amount - fee - tax
+            trade_history.append({
+                "買付日": buy_date.strftime("%Y-%m-%d") if buy_date is not None else "",
+                "買付価格": round(buy_price, 2),
+                "売却日": df.index[i].strftime("%Y-%m-%d"),
+                "売却価格": round(price, 2),
+                "決済理由": "通常売却",
+                "株数": shares,
+                "売買差益": round(realized_profit),
+                "買付手数料": round(buy_fee),
+                "売却手数料": round(fee),
+                "税金": round(tax),
+                "実現損益": round(realized_profit - buy_fee - fee - tax),
+})
 
             shares = 0
             buy_price = 0
+            buy_date = None
+            buy_fee = 0
             borrowed_amount = 0
             trade_count += 1
 
@@ -234,7 +275,7 @@ def backtest(df):
             position_value = shares * price
             
 
-            equity = position_value - borrowed_amount
+            equity = cash + position_value - borrowed_amount
             current_value = equity
 
             margin_rate = equity / position_value if position_value > 0 else 1
@@ -256,11 +297,36 @@ def backtest(df):
                 proceeds = shares * price
                 fee = proceeds * FEE_RATE
 
-                cash = proceeds - borrowed_amount - fee
+                cash = (
+                    cash
+                    + proceeds
+                    - borrowed_amount
+                    - fee
+                )
+
+                forced_realized_profit = (price - buy_price) * shares
+
+                trade_history.append({
+                    "買付日": buy_date.strftime("%Y-%m-%d") if buy_date is not None else "",
+                    "買付価格": round(buy_price, 2),
+                    "売却日": df.index[i].strftime("%Y-%m-%d"),
+                    "売却価格": round(price, 2),
+                    "決済理由": "強制決済",
+                    "株数": shares,
+                    "売買差益": round(forced_realized_profit),
+                    "買付手数料": round(buy_fee),
+                    "売却手数料": round(fee),
+                    "税金": 0,
+                    "実現損益": round(forced_realized_profit - buy_fee - fee),
+                })
 
                 shares = 0
                 buy_price = 0
+                buy_date = None
+                buy_fee = 0
                 borrowed_amount = 0
+                trade_count += 1
+
 
         if current_value > max_value:
             max_value = current_value
@@ -273,7 +339,23 @@ def backtest(df):
     final_price = df.iloc[-1]["Close"].item()
 
     if shares > 0:
-        borrowed_amount = buy_price * shares - INITIAL_CASH
+        unrealized_profit = (final_price - buy_price) * shares
+
+        trade_history.append({
+            "買付日": buy_date.strftime("%Y-%m-%d") if buy_date is not None else "",
+            "買付価格": round(buy_price, 2),
+            "売却日": "",
+            "売却価格": round(final_price, 2),
+            "決済理由": "期末保有中",
+            "株数": shares,
+            "売買差益": round(unrealized_profit),
+            "買付手数料": round(buy_fee),
+            "売却手数料": 0,
+            "税金": 0,
+            "実現損益": None,
+        })
+
+    if shares > 0:
         final_value = cash + shares * final_price - borrowed_amount
     else:
         final_value = cash
@@ -281,7 +363,7 @@ def backtest(df):
     profit = final_value - INITIAL_CASH
     return_rate = (final_value / INITIAL_CASH - 1) * 100
 
-    return final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count
+    return final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history
 
 def color_profit(val):
     try:
@@ -302,6 +384,7 @@ with action_col2:
 
 if run_backtest:
     results = []
+    trade_histories_by_ticker = {}
 
     for ticker in TICKERS:
         df = get_data(ticker)
@@ -309,8 +392,8 @@ if run_backtest:
         if df is None or df.empty:
             continue
 
-        final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count = backtest(df)
-
+        final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history = backtest(df)
+        trade_histories_by_ticker[ticker] = trade_history
         rejection_reasons = []
 
         if return_rate < min_return:
@@ -381,6 +464,14 @@ if run_backtest:
     )
 
     result_df = result_df.drop(columns=["評価順"])
+
+    st.session_state["result_df"] = result_df.copy()
+    st.session_state["trade_histories_by_ticker"] = trade_histories_by_ticker.copy()
+
+
+if st.session_state["result_df"] is not None:
+    result_df = st.session_state["result_df"].copy()
+    trade_histories_by_ticker = st.session_state["trade_histories_by_ticker"]
 
     display_df = result_df.copy()
 
@@ -461,8 +552,8 @@ if run_backtest:
     )
 
 
-    overview_tab, risk_tab, all_tab = st.tabs(
-        ["概要", "信用リスク", "全項目"]
+    overview_tab, risk_tab, history_tab, all_tab = st.tabs(
+        ["概要", "信用リスク", "売買履歴", "全項目"]
     )
 
     with overview_tab:
@@ -478,6 +569,50 @@ if run_backtest:
             use_container_width=True,
             hide_index=True
         )
+    with history_tab:
+        history_tickers = list(trade_histories_by_ticker.keys())
+
+        if history_tickers:
+            selected_ticker = st.selectbox(
+                "売買履歴を確認する銘柄",
+                history_tickers,
+                format_func=lambda ticker: (
+                    f"{ticker} {TICKER_NAMES.get(ticker, '')}"
+                ),
+                key="trade_history_ticker"
+            )
+
+            selected_history = trade_histories_by_ticker.get(
+                selected_ticker,
+                []
+            )
+
+            if selected_history:
+                history_df = pd.DataFrame(selected_history)
+
+                history_styled = (
+                    history_df.style
+                    .format({
+                        "買付価格": "¥{:,.2f}",
+                        "売却価格": "¥{:,.2f}",
+                        "株数": "{:,.0f}",
+                        "売買差益": "¥{:,.0f}",
+                        "買付手数料": "¥{:,.0f}",
+                        "売却手数料": "¥{:,.0f}",
+                        "税金": "¥{:,.0f}",
+                        "実現損益": "¥{:,.0f}",
+                    }, na_rep="-")
+                )
+
+                st.dataframe(
+                    history_styled,
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("この銘柄には売買履歴がありません。")
+        else:
+            st.info("表示できる売買履歴がありません。")
 
     with all_tab:
         st.dataframe(
