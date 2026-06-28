@@ -655,7 +655,14 @@ if run_backtest:
             "強制決済回数": forced_liquidation_count,
 
         })
-    
+     if not results:
+        st.error(
+            "バックテスト結果を作成できませんでした。"
+            "株価データの取得に失敗した可能性があります。"
+            "少し時間を空けるか、少なくとも一つの銘柄を選択して、もう一度実行してください。"
+        )
+        st.stop()
+
     result_df = pd.DataFrame(results)
 
     if only_adopted:
