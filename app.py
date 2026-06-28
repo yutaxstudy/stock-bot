@@ -820,6 +820,20 @@ if st.session_state["result_df"] is not None:
         start_year = chart_df.index.min().year
         end_year = chart_df.index.max().year
 
+        year_tick_values = [
+            pd.Timestamp(year=year, month=1, day=1)
+            for year in range(start_year, end_year + 1)
+        ]
+
+        year_axis = alt.Axis(
+            values=year_tick_values,
+            format="%Y",
+            title="年",
+            labelAngle=0,
+            labelPadding=8,
+            grid=False,
+        )
+
         year_lines_df = pd.DataFrame({
             "日付": pd.to_datetime([
                 f"{year}-01-01"
@@ -838,7 +852,7 @@ if st.session_state["result_df"] is not None:
             .encode(
                 x=alt.X(
                     "日付:T",
-                    axis=None,
+                    axis=year_axis,
                 )
             )
         )
@@ -849,17 +863,20 @@ if st.session_state["result_df"] is not None:
             .encode(
                 x=alt.X(
                     "日付:T",
-                    title="日付",
-                    axis=alt.Axis(
-                        format="%Y",
-                        tickCount={"interval": "year", "step": 1},
-                        labelAngle=0,
-                    ),
+                    axis=year_axis,
                 ),
                 y=alt.Y(
                     "金額:Q",
-                    title="総資産（円）",
-                    axis=alt.Axis(format=",.0f"),
+                    title="総資産",
+                    axis=alt.Axis(
+                        labelExpr=(
+                            "datum.value >= 10000 "
+                            "? format(datum.value / 10000, ',.0f') + '万' "
+                            ": format(datum.value, ',.0f')"
+                        ),
+                        labelPadding=6,
+                        titlePadding=12,
+                    ),
                 ),
                 color=alt.Color(
                     "項目:N",
@@ -885,11 +902,50 @@ if st.session_state["result_df"] is not None:
             )
         )
 
+        current_point_df = pd.DataFrame({
+            "日付": [chart_df.index[-1]],
+            "金額": [chart_df["総資産"].iloc[-1]],
+        })
+
+        current_point = (
+            alt.Chart(current_point_df)
+            .mark_point(
+                filled=True,
+                color="red",
+                size=180,
+                stroke="white",
+                strokeWidth=2,
+            )
+            .encode(
+                x=alt.X("日付:T"),
+                y=alt.Y("金額:Q"),
+                tooltip=[
+                    alt.Tooltip(
+                        "日付:T",
+                        title="最終日",
+                        format="%Y-%m-%d",
+                    ),
+                    alt.Tooltip(
+                        "金額:Q",
+                        title="最終総資産",
+                        format=",.0f",
+                    ),
+                ],
+            )
+        )
+
         asset_chart = (
-            year_lines
-            + asset_lines
+            asset_lines
+            + year_lines
+            + current_point
         ).properties(
-            height=420
+            height=420,
+            padding={
+                "left": 60,
+                "right": 10,
+                "top": 10,
+                "bottom": 35,
+            },
         ).interactive()
 
         st.altair_chart(
