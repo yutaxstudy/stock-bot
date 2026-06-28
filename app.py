@@ -223,15 +223,34 @@ if st.button("バックテスト実行"):
 
         final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count = backtest(df)
 
-        if (
-           return_rate >= min_return
-           and max_drawdown <= max_drawdown_limit
-           and trade_count >= 5
-           and forced_liquidation_count == 0
-        ):
-            judge = "採用候補"
-        else:
+        rejection_reasons = []
+
+        if return_rate < min_return:
+            rejection_reasons.append(
+                f"リターン不足（{return_rate:.2f}%）"
+            )
+
+        if max_drawdown > max_drawdown_limit:
+            rejection_reasons.append(
+                f"最大下落率超過（{max_drawdown:.2f}%）"
+            )
+
+        if trade_count < 5:
+            rejection_reasons.append(
+                f"取引回数不足（{trade_count}回）"
+            )
+
+        if forced_liquidation_count > 0:
+            rejection_reasons.append(
+                f"強制決済あり（{forced_liquidation_count}回）"
+            )
+
+        if rejection_reasons:
             judge = "見送り"
+            rejection_reason = "、".join(rejection_reasons)
+        else:
+            judge = "採用候補"
+            rejection_reason = "条件達成"
 
         if forced_liquidation_count > 0:
             rating = "✕"
@@ -251,6 +270,7 @@ if st.button("バックテスト実行"):
             "最大下落率%": round(max_drawdown, 2),
             "最低保証金率%": round(min_margin_rate * 100, 2),
             "判定": judge,
+            "見送り理由": rejection_reason,
             "追証発生回数": margin_call_count,
             "最大追証額": round(max_margin_call_amount),
             "強制決済回数": forced_liquidation_count,
