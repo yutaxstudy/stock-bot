@@ -1,16 +1,70 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+from pathlib import Path
 from datetime import date, timedelta
 
 st.set_page_config(
     page_title="株バックテストアプリ",
     layout="wide"
 )
+JPX_FILE_PATH = Path(__file__).parent / "data" / "jpx_stocks.xlsx"
+
+
+@st.cache_data
+def load_jpx_stocks():
+    df = pd.read_excel(
+        JPX_FILE_PATH,
+        dtype=str,
+        engine="openpyxl"
+    )
+
+    df.columns = [
+        str(column).strip()
+        for column in df.columns
+    ]
+
+        # コードや銘柄名の余分な空白を除去
+    df["コード"] = df["コード"].astype(str).str.strip()
+    df["銘柄名"] = df["銘柄名"].astype(str).str.strip()
+    df["市場・商品区分"] = df["市場・商品区分"].astype(str).str.strip()
+
+    # ETF・ETNなどを除き、国内株式だけにする
+    df = df[
+        df["市場・商品区分"].str.contains(
+            "内国株式",
+            na=False
+        )
+    ].copy()
+
+    # Yahoo Financeで使う銘柄コード
+    df["ticker"] = df["コード"] + ".T"
+
+    # 画面に表示する「コード＋銘柄名」
+    df["表示名"] = (
+        df["コード"]
+        + " "
+        + df["銘柄名"]
+    )
+
+    return df.reset_index(drop=True)
+try:
+    jpx_df = load_jpx_stocks()
+
+except FileNotFoundError:
+    st.error("dataフォルダにjpx_stocks.xlsxが見つかりません。")
+    st.stop()
+
+except Exception as error:
+    st.error(f"JPX銘柄一覧の読み込みに失敗しました：{error}")
+    st.stop()
+
+
+
 
 if "result_period_label" not in st.session_state:
     st.session_state["result_period_label"] = None
-    
+
 if "result_df" not in st.session_state:
     st.session_state["result_df"] = None
 
@@ -22,14 +76,107 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 銘柄グループ
-group_col1, group_col2, group_col3, group_col4 = st.columns(4)
+st.subheader("銘柄選択")
 
-with group_col1:
-    stock_group = st.selectbox(
-        "銘柄グループ",
-        ["半導体", "大型株", "高配当", "優待株"]
+selection_mode = "JPX一覧から選択"
+
+selected_jpx_tickers = []
+
+if selection_mode == "JPX一覧から選択":
+
+    col1, col2, col3 = st.columns(3)
+
+    market_options = (
+        ["すべて"]
+        + sorted(
+            jpx_df["市場・商品区分"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
     )
+
+    industry_options = (
+        ["すべて"]
+        + sorted(
+            jpx_df["33業種区分"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+    )
+
+    with col1:
+        selected_market = st.selectbox(
+            "市場区分",
+            market_options
+        )
+
+    with col2:
+        selected_industry = st.selectbox(
+            "業種",
+            industry_options
+        )
+
+    with col3:
+        stock_keyword = st.text_input(
+            "銘柄名・コード検索",
+            placeholder="例：アドバンテスト、6857"
+        )
+
+    filtered_jpx_df = jpx_df.copy()
+
+    if selected_market != "すべて":
+        filtered_jpx_df = filtered_jpx_df[
+            filtered_jpx_df["市場・商品区分"]
+            == selected_market
+        ]
+
+    if selected_industry != "すべて":
+        filtered_jpx_df = filtered_jpx_df[
+            filtered_jpx_df["33業種区分"]
+            == selected_industry
+        ]
+
+    if stock_keyword.strip():
+        keyword = stock_keyword.strip()
+
+        filtered_jpx_df = filtered_jpx_df[
+            filtered_jpx_df["コード"].str.contains(
+                keyword,
+                case=False,
+                na=False,
+                regex=False
+            )
+            |
+            filtered_jpx_df["銘柄名"].str.contains(
+                keyword,
+                case=False,
+                na=False,
+                regex=False
+            )
+        ]
+
+    selected_stock_names = st.multiselect(
+        "バックテストする銘柄",
+        options=filtered_jpx_df["表示名"].tolist()
+    )
+
+    selected_jpx_df = filtered_jpx_df[
+        filtered_jpx_df["表示名"].isin(
+            selected_stock_names
+        )
+    ]
+
+    selected_jpx_tickers = (
+        selected_jpx_df["ticker"].tolist()
+    )
+
+    st.caption(
+        f"検索結果：{len(filtered_jpx_df)}銘柄 ／ "
+        f"選択中：{len(selected_jpx_tickers)}銘柄"
+    )
+
 
 
 st.markdown("### 取引の前提条件")
@@ -162,42 +309,14 @@ INITIAL_CASH = 1_000_000
 FEE_RATE = 0.001
 TAX_RATE = 0.20315
 
-GROUPS = {
-    "半導体": [
-        "8035.T", "6920.T", "6146.T", "7735.T", "6723.T",
-        "4063.T", "3436.T", "6963.T", "285A.T", "6526.T",
-        "6525.T", "6521.T", "6227.T", "6613.T",
-    ],
-    "大型株": [
-        "7203.T", "6758.T", "9984.T", "8306.T", "9432.T",
-        "6861.T", "7974.T", "6098.T", "4519.T", "8058.T",
-    ],
-    "高配当": [
-        "2914.T", "4502.T", "5020.T", "8053.T", "8316.T",
-        "8591.T", "8766.T", "9433.T", "9434.T", "9104.T",
-    ],
-    "優待株": [
-        "4755.T", "8267.T", "9831.T", "4661.T", "2702.T",
-        "3197.T", "3387.T", "7412.T", "8591.T", "9202.T",
-    ],
-}
-TICKER_NAMES = {
-    "8035.T": "東京エレクトロン",
-    "6920.T": "レーザーテック",
-    "6146.T": "ディスコ",
-    "7735.T": "SCREEN",
-    "6723.T": "ルネサス",
-    "4063.T": "信越化学",
-    "3436.T": "SUMCO",
-    "6963.T": "ローム",
-    "285A.T": "キオクシア",
-    "6526.T": "ソシオネクスト",
-    "6525.T": "KOKUSAI ELECTRIC",
-    "6521.T": "オキサイド",
-    "6227.T": "AIメカテック",
-    "6613.T": "QDレーザ",
-}
-TICKERS = GROUPS[stock_group]
+TICKERS = selected_jpx_tickers
+
+TICKER_NAMES = dict(
+    zip(
+        selected_jpx_df["ticker"],
+        selected_jpx_df["銘柄名"]
+    )
+)
 
 def get_data(ticker):
     download_options = {
