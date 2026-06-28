@@ -32,6 +32,18 @@ long_window = st.selectbox("長期移動平均", [25, 50, 75, 100, 200], index=2
 min_return = st.selectbox("最低リターン", [0, 30, 50, 100], index=2)
 max_drawdown_limit = st.selectbox("最大下落率", [30, 40, 50, 60], index=2)
 
+min_trade_count = st.selectbox(
+    "最低取引回数",
+    [1, 3, 5, 10, 20],
+    index=2
+)
+
+max_forced_liquidation_count = st.selectbox(
+    "許容する強制決済回数",
+    [0, 1, 2, 3, 5],
+    index=0
+)
+
 only_adopted = st.checkbox("採用候補のみ表示")
 
 INITIAL_CASH = 1_000_000
@@ -235,12 +247,12 @@ if st.button("バックテスト実行"):
                 f"最大下落率超過（{max_drawdown:.2f}%）"
             )
 
-        if trade_count < 5:
+        if trade_count < min_trade_count:
             rejection_reasons.append(
                 f"取引回数不足（{trade_count}回）"
             )
 
-        if forced_liquidation_count > 0:
+        if forced_liquidation_count > max_forced_liquidation_count:
             rejection_reasons.append(
                 f"強制決済あり（{forced_liquidation_count}回）"
             )
