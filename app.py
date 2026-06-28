@@ -344,7 +344,7 @@ def backtest(df):
         trade_history.append({
             "買付日": buy_date.strftime("%Y-%m-%d") if buy_date is not None else "",
             "買付価格": round(buy_price, 2),
-            "売却日": "",
+            "売却日": df.index[-1].strftime("%Y-%m-%d"),
             "売却価格": round(final_price, 2),
             "決済理由": "期末保有中",
             "株数": shares,
@@ -590,25 +590,93 @@ if st.session_state["result_df"] is not None:
             if selected_history:
                 history_df = pd.DataFrame(selected_history)
 
-                history_styled = (
-                    history_df.style
-                    .format({
-                        "買付価格": "¥{:,.2f}",
-                        "売却価格": "¥{:,.2f}",
-                        "株数": "{:,.0f}",
-                        "売買差益": "¥{:,.0f}",
-                        "買付手数料": "¥{:,.0f}",
-                        "売却手数料": "¥{:,.0f}",
-                        "税金": "¥{:,.0f}",
-                        "実現損益": "¥{:,.0f}",
-                    }, na_rep="-")
-                )
+                closed_df = history_df[
+                    history_df["決済理由"] != "期末保有中"
+                ].copy()
 
-                st.dataframe(
-                    history_styled,
-                    use_container_width=True,
-                    hide_index=True
-                )
+                open_df = history_df[
+                    history_df["決済理由"] == "期末保有中"
+                ].copy()
+
+
+                # 決済済みの取引
+                if not closed_df.empty:
+                    st.markdown("#### 決済済み取引")
+
+                    closed_df = closed_df[
+                        [
+                            "買付日",
+                            "買付価格",
+                            "売却日",
+                            "売却価格",
+                            "決済理由",
+                            "株数",
+                            "買付手数料",
+                            "売却手数料",
+                            "税金",
+                            "実現損益",
+                        ]
+                    ]
+
+                    closed_styled = (
+                        closed_df.style
+                        .format({
+                            "買付価格": "¥{:,.2f}",
+                            "売却価格": "¥{:,.2f}",
+                            "株数": "{:,.0f}",
+                            "買付手数料": "¥{:,.0f}",
+                            "売却手数料": "¥{:,.0f}",
+                            "税金": "¥{:,.0f}",
+                            "実現損益": "¥{:,.0f}",
+                        })
+                    )
+
+                    st.dataframe(
+                        closed_styled,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+
+                # 期末時点で保有中の建玉
+                if not open_df.empty:
+                    st.markdown("#### 期末保有中")
+
+                    open_df = open_df.rename(columns={
+                        "売却日": "期末日",
+                        "売却価格": "期末価格",
+                        "売買差益": "含み損益",
+                    })
+
+                    open_df = open_df[
+                        [
+                            "買付日",
+                            "買付価格",
+                            "期末日",
+                            "期末価格",
+                            "決済理由",
+                            "株数",
+                            "買付手数料",
+                            "含み損益",
+                        ]
+                    ]
+
+                    open_styled = (
+                        open_df.style
+                        .format({
+                            "買付価格": "¥{:,.2f}",
+                            "期末価格": "¥{:,.2f}",
+                            "株数": "{:,.0f}",
+                            "買付手数料": "¥{:,.0f}",
+                            "含み損益": "¥{:,.0f}",
+                        })
+                    )
+
+                    st.dataframe(
+                        open_styled,
+                        use_container_width=True,
+                        hide_index=True
+                    )
             else:
                 st.info("この銘柄には売買履歴がありません。")
         else:
