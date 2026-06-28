@@ -1,12 +1,16 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+from datetime import date, timedelta
 
 st.set_page_config(
     page_title="株バックテストアプリ",
     layout="wide"
 )
 
+if "result_period_label" not in st.session_state:
+    st.session_state["result_period_label"] = None
+    
 if "result_df" not in st.session_state:
     st.session_state["result_df"] = None
 
@@ -56,6 +60,38 @@ with condition_col3:
         format_func=lambda x: f"{x:.0%}"
     )
 
+with condition_col4:
+    backtest_period = st.selectbox(
+        "バックテスト期間",
+        [
+            "直近1年",
+            "直近3年",
+            "直近5年",
+            "直近10年",
+            "上場来すべて",
+            "期間を指定",
+        ],
+        index=2
+    )
+
+custom_start_date = date(2019, 1, 1)
+custom_end_date = date.today()
+
+if backtest_period == "期間を指定":
+    period_col1, period_col2, period_col3, period_col4 = st.columns(4)
+
+    with period_col1:
+        custom_start_date = st.date_input(
+            "開始日",
+            value=date(2019, 1, 1)
+        )
+
+    with period_col2:
+        custom_end_date = st.date_input(
+            "終了日",
+            value=date.today(),
+            min_value=custom_start_date
+        )
 
 st.markdown("### 売買戦略")
 
@@ -164,7 +200,44 @@ TICKER_NAMES = {
 TICKERS = GROUPS[stock_group]
 
 def get_data(ticker):
-    df = yf.download(ticker, period="5y", interval="1d", auto_adjust=True)
+    download_options = {
+        "interval": "1d",
+        "auto_adjust": True,
+        "progress": False,
+    }
+
+    today = pd.Timestamp.today().normalize()
+
+    if backtest_period == "直近1年":
+        start_date = today - pd.DateOffset(years=1)
+        download_options["start"] = start_date.strftime("%Y-%m-%d")
+
+    elif backtest_period == "直近3年":
+        start_date = today - pd.DateOffset(years=3)
+        download_options["start"] = start_date.strftime("%Y-%m-%d")
+
+    elif backtest_period == "直近5年":
+        start_date = today - pd.DateOffset(years=5)
+        download_options["start"] = start_date.strftime("%Y-%m-%d")
+
+    elif backtest_period == "直近10年":
+        start_date = today - pd.DateOffset(years=10)
+        download_options["start"] = start_date.strftime("%Y-%m-%d")
+
+    elif backtest_period == "上場来すべて":
+        download_options["period"] = "max"
+
+    elif backtest_period == "期間を指定":
+        download_options["start"] = custom_start_date.isoformat()
+
+        # 終了日を含めるため、yfinanceには翌日を渡す
+        inclusive_end_date = custom_end_date + timedelta(days=1)
+        download_options["end"] = inclusive_end_date.isoformat()
+
+    df = yf.download(
+        ticker,
+        **download_options
+    )
 
     if df.empty:
         return None
@@ -467,6 +540,14 @@ if run_backtest:
 
     st.session_state["result_df"] = result_df.copy()
     st.session_state["trade_histories_by_ticker"] = trade_histories_by_ticker.copy()
+    if backtest_period == "期間を指定":
+        st.session_state["result_period_label"] = (
+        f"{custom_start_date.strftime('%Y-%m-%d')}"
+        f" ～ "
+        f"{custom_end_date.strftime('%Y-%m-%d')}"
+     )
+    else:
+        st.session_state["result_period_label"] = backtest_period
 
 
 if st.session_state["result_df"] is not None:
@@ -479,8 +560,13 @@ if st.session_state["result_df"] is not None:
         (display_df["判定"] == "採用候補").sum()
     )
 
-    st.write(f"採用候補数：{adopted_count}銘柄")
+    if st.session_state["result_period_label"] is not None:
+        st.caption(
+            f"バックテスト期間："
+            f"{st.session_state['result_period_label']}"
+        )
 
+    st.write(f"採用候補数：{adopted_count}銘柄")
 
     # 概要に表示する項目
     overview_columns = [
