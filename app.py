@@ -692,23 +692,73 @@ tax_mode = st.radio(
 
 st.markdown("### 売買戦略")
 
-strategy_col1, strategy_col2, strategy_col3, strategy_col4 = st.columns(4)
+strategy_select_col, strategy_blank_col = st.columns([1, 3])
 
-with strategy_col1:
-    short_window = st.selectbox(
-        "短期移動平均",
-        [5, 10, 25, 50],
-        index=2,
-        format_func=lambda x: f"{x}日"
+with strategy_select_col:
+    strategy_type = st.selectbox(
+        "戦略",
+        [
+            "移動平均クロス",
+            "RSI逆張り",
+        ],
+        index=0,
+        key="strategy_type",
     )
 
-with strategy_col2:
-    long_window = st.selectbox(
-        "長期移動平均",
-        [25, 50, 75, 100, 200],
-        index=2,
-        format_func=lambda x: f"{x}日"
-    )
+if strategy_type == "移動平均クロス":
+    strategy_col1, strategy_col2 = st.columns(2)
+
+    with strategy_col1:
+        short_window = st.selectbox(
+            "短期移動平均",
+            [5, 10, 25, 50],
+            index=2,
+            format_func=lambda x: f"{x}日",
+        )
+
+    with strategy_col2:
+        long_window = st.selectbox(
+            "長期移動平均",
+            [25, 50, 75, 100, 200],
+            index=2,
+            format_func=lambda x: f"{x}日",
+        )
+
+    # RSIを選択していないときの内部初期値
+    rsi_period = 14
+    rsi_buy_level = 30
+    rsi_sell_level = 70
+
+else:
+    strategy_col1, strategy_col2, strategy_col3 = st.columns(3)
+
+    with strategy_col1:
+        rsi_period = st.selectbox(
+            "RSI期間",
+            [7, 14, 21],
+            index=1,
+            format_func=lambda x: f"{x}日",
+        )
+
+    with strategy_col2:
+        rsi_buy_level = st.selectbox(
+            "買い基準",
+            [20, 25, 30, 35],
+            index=2,
+            format_func=lambda x: f"RSI {x}以下",
+        )
+
+    with strategy_col3:
+        rsi_sell_level = st.selectbox(
+            "売り基準",
+            [60, 65, 70, 75, 80],
+            index=2,
+            format_func=lambda x: f"RSI {x}以上",
+        )
+
+    # 後ろの既存処理でエラーにしないための内部初期値
+    short_window = 25
+    long_window = 75
 
 
 st.markdown("### 採用条件")
@@ -831,8 +881,58 @@ def get_data(ticker):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    df["MA_short"] = df["Close"].rolling(short_window).mean()
-    df["MA_long"] = df["Close"].rolling(long_window).mean()
+    # 移動平均
+    df["MA_short"] = (
+        df["Close"]
+        .rolling(short_window)
+        .mean()
+    )
+
+    df["MA_long"] = (
+        df["Close"]
+        .rolling(long_window)
+        .mean()
+    )
+
+    # RSI（ワイルダー方式）
+    price_change = df["Close"].diff()
+
+    gain = price_change.clip(lower=0)
+    loss = -price_change.clip(upper=0)
+
+    average_gain = gain.ewm(
+        alpha=1 / rsi_period,
+        min_periods=rsi_period,
+        adjust=False,
+    ).mean()
+
+    average_loss = loss.ewm(
+        alpha=1 / rsi_period,
+        min_periods=rsi_period,
+        adjust=False,
+    ).mean()
+
+    relative_strength = (
+        average_gain
+        / average_loss.replace(0, float("nan"))
+    )
+
+    df["RSI"] = (
+        100
+        - (100 / (1 + relative_strength))
+    )
+
+    # 上昇しかない期間はRSIを100、
+    # 下落しかない期間はRSIを0として扱う
+    df.loc[
+        (average_loss == 0) & (average_gain > 0),
+        "RSI"
+    ] = 100
+
+    df.loc[
+        (average_gain == 0) & (average_loss > 0),
+        "RSI"
+    ] = 0
 
     return df.dropna()
 
@@ -871,8 +971,32 @@ def backtest(df):
         prev_long = prev["MA_long"].item()
         today_short = today["MA_short"].item()
         today_long = today["MA_long"].item()
+        prev_rsi = prev["RSI"].item()
+        today_rsi = today["RSI"].item()
 
-        if prev_short <= prev_long and today_short > today_long and shares == 0:
+        if strategy_type == "移動平均クロス":
+            buy_signal = (
+                prev_short <= prev_long
+                and today_short > today_long
+            )
+
+            sell_signal = (
+                prev_short >= prev_long
+                and today_short < today_long
+            )
+
+        else:
+            buy_signal = (
+                prev_rsi > rsi_buy_level
+                and today_rsi <= rsi_buy_level
+            )
+
+            sell_signal = (
+                prev_rsi < rsi_sell_level
+                and today_rsi >= rsi_sell_level
+            )
+
+        if buy_signal and shares == 0:
             available_cash = cash
             buying_power = available_cash * leverage
             max_shares = int(
@@ -910,7 +1034,7 @@ def backtest(df):
             buy_fee = fee
             trade_count += 1
 
-        elif prev_short >= prev_long and today_short < today_long and shares > 0:
+        elif sell_signal and shares > 0:
             proceeds = shares * price
             fee = calculate_trade_fee(proceeds)
             realized_profit = (price - buy_price) * shares
