@@ -737,8 +737,15 @@ else:
     CURRENCY_NAME = "USD"
     LOT_SIZE = 1
 
-FEE_RATE = 0.001
 TAX_RATE = 0.20315
+
+
+def calculate_trade_fee(trade_value):
+    if target_market == "日本株":
+        return 0.0
+
+    # 米国株：税込0.495%、上限22ドル
+    return min(trade_value * 0.00495, 22.0)
 
 TICKERS = selected_jpx_tickers
 
@@ -840,16 +847,24 @@ def backtest(df):
             available_cash = cash
             buying_power = available_cash * leverage
             max_shares = int(
-                buying_power // (price * (1 + FEE_RATE))
+                buying_power // price
             )
 
             shares = (
-               max_shares // LOT_SIZE
+                max_shares // LOT_SIZE
             ) * LOT_SIZE
 
             cost = shares * price
-            fee = cost * FEE_RATE
+            fee = calculate_trade_fee(cost)
             total_purchase = cost + fee
+
+            # 手数料を含めて買付余力を超えた場合は、
+            # 1売買単位ずつ減らす
+            while shares > 0 and total_purchase > buying_power:
+                shares -= LOT_SIZE
+                cost = shares * price
+                fee = calculate_trade_fee(cost)
+                total_purchase = cost + fee
 
             borrowed_amount = max(
                 total_purchase - available_cash,
@@ -868,7 +883,7 @@ def backtest(df):
 
         elif prev_short >= prev_long and today_short < today_long and shares > 0:
             proceeds = shares * price
-            fee = proceeds * FEE_RATE
+            fee = calculate_trade_fee(proceeds)
             realized_profit = (price - buy_price) * shares
 
             taxable_profit = realized_profit - buy_fee - fee
@@ -928,7 +943,7 @@ def backtest(df):
                 forced_liquidation_count += 1
 
                 proceeds = shares * price
-                fee = proceeds * FEE_RATE
+                ffee = calculate_trade_fee(proceeds)
 
                 cash = (
                     cash
@@ -1449,13 +1464,13 @@ if st.session_state["result_df"] is not None:
                     closed_styled = (
                         closed_df.style
                         .format({
-                            "買付価格": "¥{:,.2f}",
-                            "売却価格": "¥{:,.2f}",
+                            "買付価格": f"{CURRENCY_SYMBOL}{{:,.2f}}",
+                            "売却価格": f"{CURRENCY_SYMBOL}{{:,.2f}}",
                             "株数": "{:,.0f}",
-                            "買付手数料": "¥{:,.0f}",
-                            "売却手数料": "¥{:,.0f}",
-                            "税金": "¥{:,.0f}",
-                            "実現損益": "¥{:,.0f}",
+                            "買付手数料": f"{CURRENCY_SYMBOL}{{:,.2f}}",
+                            "売却手数料": f"{CURRENCY_SYMBOL}{{:,.2f}}",
+                            "税金": f"{CURRENCY_SYMBOL}{{:,.2f}}",
+                            "実現損益": f"{CURRENCY_SYMBOL}{{:,.2f}}",
                         })
                     )
 
@@ -1492,11 +1507,11 @@ if st.session_state["result_df"] is not None:
                     open_styled = (
                         open_df.style
                         .format({
-                            "買付価格": "¥{:,.2f}",
-                            "期末価格": "¥{:,.2f}",
+                            "買付価格": f"{CURRENCY_SYMBOL}{{:,.2f}}",
+                            "期末価格": f"{CURRENCY_SYMBOL}{{:,.2f}}",
                             "株数": "{:,.0f}",
-                            "買付手数料": "¥{:,.0f}",
-                            "含み損益": "¥{:,.0f}",
+                            "買付手数料": f"{CURRENCY_SYMBOL}{{:,.2f}}",
+                            "含み損益": f"{CURRENCY_SYMBOL}{{:,.2f}}",
                         })
                     )
 
