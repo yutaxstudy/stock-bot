@@ -679,6 +679,17 @@ if backtest_period == "期間を指定":
             min_value=custom_start_date
         )
 
+tax_mode = st.radio(
+    "税金の扱い",
+    ["税引前", "簡易税引後"],
+    index=0,
+    horizontal=True,
+    help=(
+        "簡易税引後は、各売却取引の利益に20.315%を適用します。"
+        "年間の損益通算や米国株の為替換算はまだ反映しません。"
+    ),
+)
+
 st.markdown("### 売買戦略")
 
 strategy_col1, strategy_col2, strategy_col3, strategy_col4 = st.columns(4)
@@ -905,7 +916,12 @@ def backtest(df):
             realized_profit = (price - buy_price) * shares
 
             taxable_profit = realized_profit - buy_fee - fee
-            tax = max(taxable_profit, 0) * TAX_RATE
+
+            tax = (
+                max(taxable_profit, 0) * TAX_RATE
+                if tax_mode == "簡易税引後"
+                else 0.0
+            )
 
             cash = (
                 cash
@@ -925,8 +941,11 @@ def backtest(df):
                 "売買差益": round(realized_profit),
                 "買付手数料": round(buy_fee),
                 "売却手数料": round(fee),
-                "税金": round(tax),
-                "実現損益": round(realized_profit - buy_fee - fee - tax),
+                "税金": round(tax, 2),
+                "実現損益": round(
+                    realized_profit - buy_fee - fee - tax,
+                    2
+                ),
 })
 
             shares = 0
@@ -963,27 +982,52 @@ def backtest(df):
                 proceeds = shares * price
                 ffee = calculate_trade_fee(proceeds)
 
+                forced_realized_profit = (
+                    price - buy_price
+                ) * shares
+
+                forced_taxable_profit = (
+                    forced_realized_profit
+                    - buy_fee
+                    - ffee
+                )
+
+                forced_tax = (
+                    max(forced_taxable_profit, 0) * TAX_RATE
+                    if tax_mode == "簡易税引後"
+                    else 0.0
+                )
+
                 cash = (
                     cash
                     + proceeds
                     - borrowed_amount
-                    - fee
+                    - ffee
+                    - forced_tax
                 )
 
-                forced_realized_profit = (price - buy_price) * shares
-
                 trade_history.append({
-                    "買付日": buy_date.strftime("%Y-%m-%d") if buy_date is not None else "",
+                    "買付日": (
+                        buy_date.strftime("%Y-%m-%d")
+                        if buy_date is not None
+                        else ""
+                    ),
                     "買付価格": round(buy_price, 2),
                     "売却日": df.index[i].strftime("%Y-%m-%d"),
                     "売却価格": round(price, 2),
                     "決済理由": "強制決済",
                     "株数": shares,
-                    "売買差益": round(forced_realized_profit),
-                    "買付手数料": round(buy_fee),
-                    "売却手数料": round(fee),
-                    "税金": 0,
-                    "実現損益": round(forced_realized_profit - buy_fee - fee),
+                    "売買差益": round(forced_realized_profit, 2),
+                    "買付手数料": round(buy_fee, 2),
+                    "売却手数料": round(ffee, 2),
+                    "税金": round(forced_tax, 2),
+                    "実現損益": round(
+                        forced_realized_profit
+                        - buy_fee
+                        - ffee
+                        - forced_tax,
+                        2
+                    ),
                 })
 
                 shares = 0
