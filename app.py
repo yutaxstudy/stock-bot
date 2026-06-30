@@ -659,6 +659,19 @@ with condition_col4:
         ],
         index=2
     )
+    price_data_mode = st.selectbox(
+    "株価データ方式",
+    ["adjusted", "actual"],
+    format_func=lambda x: {
+        "adjusted": "調整後株価（テクニカル分析向け）",
+        "actual": "実価格（株式分割・配当対応）",
+    }[x],
+    index=0,
+    help=(
+        "調整後株価：株式分割や配当による価格変動を調整したデータです。"
+        "実価格：当時の実際の株価を使用し、株式分割や配当を別途処理します。"
+    ),
+)
 
 custom_start_date = date(2019, 1, 1)
 custom_end_date = date.today()
@@ -835,7 +848,7 @@ TICKER_NAMES = dict(
     )
 )
 
-def get_data(ticker):
+def get_data(ticker, price_data_mode):
     download_options = {
         "interval": "1d",
         "auto_adjust": True,
@@ -870,6 +883,10 @@ def get_data(ticker):
         inclusive_end_date = custom_end_date + timedelta(days=1)
         download_options["end"] = inclusive_end_date.isoformat()
 
+    download_options["auto_adjust"] = (price_data_mode == "adjusted")
+    download_options["actions"] = True
+    download_options["progress"] = False
+
     df = yf.download(
         ticker,
         **download_options
@@ -881,21 +898,55 @@ def get_data(ticker):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
+    # 売買に使う価格とテクニカル指標用価格
+    if price_data_mode == "actual":
+        # YahooのCloseは株式分割について調整済みなので、
+        # 将来発生する分割倍率を掛けて当時の実価格へ戻す
+        split_events = df.get(
+            "Stock Splits",
+            pd.Series(0.0, index=df.index)
+        )
+
+        split_events = (
+            split_events
+            .fillna(0.0)
+            .replace(0.0, 1.0)
+        )
+
+        future_split_factor = (
+            split_events
+            .shift(-1, fill_value=1.0)
+            .iloc[::-1]
+            .cumprod()
+            .iloc[::-1]
+        )
+
+        df["Trade_Close"] = df["Close"] * future_split_factor
+
+        if "Adj Close" in df.columns:
+            df["Signal_Close"] = df["Adj Close"]
+        else:
+            df["Signal_Close"] = df["Close"]
+
+    else:
+        df["Trade_Close"] = df["Close"]
+        df["Signal_Close"] = df["Close"]
+
     # 移動平均
     df["MA_short"] = (
-        df["Close"]
+        df["Signal_Close"]
         .rolling(short_window)
         .mean()
     )
 
     df["MA_long"] = (
-        df["Close"]
+        df["Signal_Close"]
         .rolling(long_window)
         .mean()
     )
 
     # RSI（ワイルダー方式）
-    price_change = df["Close"].diff()
+    price_change = df["Signal_Close"].diff()
 
     gain = price_change.clip(lower=0)
     loss = -price_change.clip(upper=0)
@@ -937,10 +988,13 @@ def get_data(ticker):
     return df.dropna()
 
 
-def backtest(df):
+def backtest(df, price_data_mode):
     cash = INITIAL_CASH
     shares = 0
     buy_price = 0
+    # 売買履歴の表示専用
+    original_buy_price = 0
+    original_buy_shares = 0
     borrowed_amount = 0
     trade_count = 0
     trade_history = []
@@ -965,7 +1019,27 @@ def backtest(df):
         prev = df.iloc[i - 1]
         today = df.iloc[i]
 
-        price = today["Close"].item()
+        # 実価格モードの株式分割・配当処理
+        if price_data_mode == "actual":
+            split_ratio = float(today.get("Stock Splits", 0.0))
+            dividend = float(today.get("Dividends", 0.0))
+
+            if pd.isna(split_ratio):
+                split_ratio = 0.0
+
+            if pd.isna(dividend):
+                dividend = 0.0
+
+            # 株式分割
+            if split_ratio > 0 and shares > 0:
+                shares *= split_ratio
+                buy_price /= split_ratio
+
+            # 配当金を現金へ加算
+            if dividend > 0 and shares > 0:
+                cash += shares * dividend
+
+        price = today["Trade_Close"].item()
 
         prev_short = prev["MA_short"].item()
         prev_long = prev["MA_long"].item()
@@ -1032,6 +1106,8 @@ def backtest(df):
             buy_price = price
             buy_date = df.index[i]
             buy_fee = fee
+            original_buy_price = price
+            original_buy_shares = shares
             trade_count += 1
 
         elif sell_signal and shares > 0:
@@ -1057,10 +1133,11 @@ def backtest(df):
 
             trade_history.append({
                 "買付日": buy_date.strftime("%Y-%m-%d") if buy_date is not None else "",
-                "買付価格": round(buy_price, 2),
+                "買付価格": round(original_buy_price, 2),
                 "売却日": df.index[i].strftime("%Y-%m-%d"),
                 "売却価格": round(price, 2),
                 "決済理由": "通常売却",
+                "買付時株数": original_buy_shares,
                 "株数": shares,
                 "売買差益": round(realized_profit),
                 "買付手数料": round(buy_fee),
@@ -1136,10 +1213,11 @@ def backtest(df):
                         if buy_date is not None
                         else ""
                     ),
-                    "買付価格": round(buy_price, 2),
+                    "買付価格": round(original_buy_price, 2),
                     "売却日": df.index[i].strftime("%Y-%m-%d"),
                     "売却価格": round(price, 2),
                     "決済理由": "強制決済",
+                    "買付時株数": original_buy_shares,
                     "株数": shares,
                     "売買差益": round(forced_realized_profit, 2),
                     "買付手数料": round(buy_fee, 2),
@@ -1174,17 +1252,18 @@ def backtest(df):
         if drawdown > max_drawdown:
             max_drawdown = drawdown
 
-    final_price = df.iloc[-1]["Close"].item()
+    final_price = df.iloc[-1]["Trade_Close"].item()
 
     if shares > 0:
         unrealized_profit = (final_price - buy_price) * shares
 
         trade_history.append({
             "買付日": buy_date.strftime("%Y-%m-%d") if buy_date is not None else "",
-            "買付価格": round(buy_price, 2),
+            "買付価格": round(original_buy_price, 2),
             "売却日": df.index[-1].strftime("%Y-%m-%d"),
             "売却価格": round(final_price, 2),
             "決済理由": "期末保有中",
+            "買付時株数": original_buy_shares,
             "株数": shares,
             "売買差益": round(unrealized_profit),
             "買付手数料": round(buy_fee),
@@ -1226,12 +1305,12 @@ if run_backtest:
     equity_curves_by_ticker = {}
 
     for ticker in TICKERS:
-        df = get_data(ticker)
+        df = get_data(ticker, price_data_mode)
 
         if df is None or df.empty:
             continue
 
-        final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history, equity_history = backtest(df)
+        final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history, equity_history = backtest(df, price_data_mode)
         trade_histories_by_ticker[ticker] = trade_history
         equity_curves_by_ticker[ticker] = pd.DataFrame(equity_history)
         rejection_reasons = []
