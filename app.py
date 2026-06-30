@@ -598,7 +598,25 @@ else:
         f"選択中：{len(selected_jpx_tickers)}銘柄"
     )
 
+if target_market == "日本株":
+    leverage_options = [1.0, 1.3, 1.5, 2.0]
+    leverage_default_index = 2
 
+    maintenance_options = [0.20, 0.25, 0.30, 0.35]
+    maintenance_default_index = 0
+
+    forced_liquidation_options = [0.10, 0.15, 0.20]
+    forced_liquidation_default_index = 1
+
+else:
+    leverage_options = [1.0, 1.3, 1.5]
+    leverage_default_index = 2
+
+    maintenance_options = [0.30, 0.35, 0.40]
+    maintenance_default_index = 0
+
+    forced_liquidation_options = [0.15, 0.20, 0.25]
+    forced_liquidation_default_index = 1
 
 st.markdown("### 取引の前提条件")
 
@@ -607,24 +625,24 @@ condition_col1, condition_col2, condition_col3, condition_col4 = st.columns(4)
 with condition_col1:
     leverage = st.selectbox(
         "信用倍率",
-        [1.0, 1.3, 1.5, 2.0],
-        index=2,
+        leverage_options,
+        index=leverage_default_index,
         format_func=lambda x: f"{x:.1f}倍"
     )
 
 with condition_col2:
     maintenance_rate = st.selectbox(
         "追証発生保証金率",
-        [0.25, 0.30, 0.35],
-        index=1,
+        maintenance_options,
+        index=maintenance_default_index,
         format_func=lambda x: f"{x:.0%}"
     )
 
 with condition_col3:
     forced_liquidation_rate = st.selectbox(
         "強制決済保証金率",
-        [0.15, 0.20, 0.25],
-        index=1,
+        forced_liquidation_options,
+        index=forced_liquidation_default_index,
         format_func=lambda x: f"{x:.0%}"
     )
 
