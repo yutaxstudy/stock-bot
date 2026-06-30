@@ -730,10 +730,12 @@ if target_market == "日本株":
     INITIAL_CASH = 1_000_000
     CURRENCY_SYMBOL = "¥"
     CURRENCY_NAME = "円"
+    LOT_SIZE = 100
 else:
     INITIAL_CASH = 10_000
     CURRENCY_SYMBOL = "$"
     CURRENCY_NAME = "USD"
+    LOT_SIZE = 1
 
 FEE_RATE = 0.001
 TAX_RATE = 0.20315
@@ -837,9 +839,13 @@ def backtest(df):
         if prev_short <= prev_long and today_short > today_long and shares == 0:
             available_cash = cash
             buying_power = available_cash * leverage
-            shares = int(
+            max_shares = int(
                 buying_power // (price * (1 + FEE_RATE))
             )
+
+            shares = (
+               max_shares // LOT_SIZE
+            ) * LOT_SIZE
 
             cost = shares * price
             fee = cost * FEE_RATE
