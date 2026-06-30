@@ -4,6 +4,7 @@ import pandas as pd
 from pathlib import Path
 from datetime import date, timedelta
 import altair as alt
+import requests
 
 st.set_page_config(
     page_title="株バックテストアプリ",
@@ -49,6 +50,270 @@ def load_jpx_stocks():
     )
 
     return df.reset_index(drop=True)
+
+@st.cache_data(ttl=60 * 60 * 12)
+def load_us_sector_data():
+    url = "https://api.nasdaq.com/api/screener/stocks"
+
+    params = {
+        "tableonly": "true",
+        "limit": "10000",
+        "offset": "0",
+        "download": "true",
+    }
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/142.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.nasdaq.com/",
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+
+    rows = (
+        data.get("data", {})
+        .get("rows", [])
+    )
+
+    if not rows:
+        raise ValueError(
+            "Nasdaqからセクター情報を取得できませんでした。"
+        )
+
+    sector_df = pd.DataFrame(rows)
+
+    sector_df = sector_df.rename(
+        columns={
+            "symbol": "ticker",
+            "sector": "セクター",
+            "industry": "業種",
+            "country": "国",
+            "marketCap": "時価総額",
+        }
+    )
+
+    required_columns = [
+        "ticker",
+        "セクター",
+        "業種",
+        "国",
+        "時価総額",
+    ]
+
+    sector_df = sector_df[required_columns].copy()
+
+    sector_df["ticker"] = (
+        sector_df["ticker"]
+        .astype(str)
+        .str.strip()
+        .str.replace(".", "-", regex=False)
+    )
+
+    for column in ["セクター", "業種", "国"]:
+        sector_df[column] = (
+            sector_df[column]
+            .fillna("")
+            .astype(str)
+            .str.replace("\n", " ", regex=False)
+            .str.strip()
+        )
+
+    sector_df["時価総額"] = pd.to_numeric(
+        sector_df["時価総額"],
+        errors="coerce",
+    )
+
+    return (
+        sector_df
+        .drop_duplicates(subset="ticker")
+        .reset_index(drop=True)
+    )
+
+@st.cache_data(ttl=60 * 60 * 12)
+def load_us_stocks():
+    nasdaq_url = (
+        "https://www.nasdaqtrader.com/dynamic/symdir/"
+        "nasdaqlisted.txt"
+    )
+
+    other_url = (
+        "https://www.nasdaqtrader.com/dynamic/symdir/"
+        "otherlisted.txt"
+    )
+
+    # Nasdaq上場銘柄
+    nasdaq_df = pd.read_csv(
+        nasdaq_url,
+        sep="|",
+        dtype=str
+    )
+
+    # NYSEなど、Nasdaq以外の取引所
+    other_df = pd.read_csv(
+        other_url,
+        sep="|",
+        dtype=str
+    )
+
+    # ファイル末尾の作成日時行を除外
+    nasdaq_df = nasdaq_df[
+        ~nasdaq_df["Symbol"]
+        .fillna("")
+        .str.startswith("File Creation Time")
+    ].copy()
+
+    other_df = other_df[
+        ~other_df["ACT Symbol"]
+        .fillna("")
+        .str.startswith("File Creation Time")
+    ].copy()
+
+    # ETF・テスト銘柄・財務状態に問題のある銘柄を除外
+    nasdaq_df = nasdaq_df[
+        (nasdaq_df["ETF"] == "N")
+        & (nasdaq_df["Test Issue"] == "N")
+        & (
+            nasdaq_df["Financial Status"]
+            .fillna("N")
+            == "N"
+        )
+    ].copy()
+
+    other_df = other_df[
+        (other_df["ETF"] == "N")
+        & (other_df["Test Issue"] == "N")
+    ].copy()
+
+    # ワラント・権利・ユニット・優先株などを除外
+    exclude_pattern = (
+        r"\b("
+        r"Warrants?|Rights?|Units?|Preferred|"
+        r"Notes?|Bonds?|Debentures?|ETNs?"
+        r")\b"
+    )
+
+    nasdaq_df = nasdaq_df[
+        ~nasdaq_df["Security Name"].str.contains(
+            exclude_pattern,
+            case=False,
+            na=False,
+            regex=True
+        )
+    ].copy()
+
+    other_df = other_df[
+        ~other_df["Security Name"].str.contains(
+            exclude_pattern,
+            case=False,
+            na=False,
+            regex=True
+        )
+    ].copy()
+
+    # 列名を統一
+    nasdaq_df = nasdaq_df.rename(
+        columns={
+            "Symbol": "ticker",
+            "Security Name": "銘柄名",
+        }
+    )
+
+    nasdaq_df["取引所"] = "NASDAQ"
+
+    exchange_map = {
+        "A": "NYSE American",
+        "N": "NYSE",
+        "P": "NYSE Arca",
+        "Z": "Cboe",
+        "V": "IEX",
+    }
+
+    other_df = other_df.rename(
+        columns={
+            "ACT Symbol": "ticker",
+            "Security Name": "銘柄名",
+        }
+    )
+
+    other_df["取引所"] = (
+        other_df["Exchange"]
+        .map(exchange_map)
+        .fillna(other_df["Exchange"])
+    )
+
+    # Nasdaqとその他取引所を結合
+    us_df = pd.concat(
+        [
+            nasdaq_df[
+                ["ticker", "銘柄名", "取引所"]
+            ],
+            other_df[
+                ["ticker", "銘柄名", "取引所"]
+            ],
+        ],
+        ignore_index=True
+    )
+
+    # yfinance用に、銘柄コードの「.」を「-」へ変換
+    us_df["ticker"] = (
+        us_df["ticker"]
+        .str.replace(".", "-", regex=False)
+    )
+
+        # Nasdaqのセクター・業種情報を追加
+    try:
+        sector_df = load_us_sector_data()
+
+        us_df = us_df.merge(
+            sector_df,
+            on="ticker",
+            how="left",
+        )
+
+    except Exception:
+        # セクター情報の取得に失敗しても、
+        # 銘柄一覧とバックテストは使用可能にする
+        us_df["セクター"] = ""
+        us_df["業種"] = ""
+        us_df["国"] = ""
+        us_df["時価総額"] = pd.NA
+
+    for column in ["セクター", "業種", "国"]:
+        us_df[column] = (
+            us_df[column]
+            .fillna("")
+            .replace("", "不明")
+        )
+    
+
+    us_df = (
+        us_df
+        .drop_duplicates(subset="ticker")
+        .sort_values(["取引所", "ticker"])
+        .reset_index(drop=True)
+    )
+
+    us_df["表示名"] = (
+        us_df["ticker"]
+        + " "
+        + us_df["銘柄名"]
+    )
+
+    return us_df
+
 try:
     jpx_df = load_jpx_stocks()
 
@@ -58,6 +323,15 @@ except FileNotFoundError:
 
 except Exception as error:
     st.error(f"JPX銘柄一覧の読み込みに失敗しました：{error}")
+    st.stop()
+
+try:
+    us_df = load_us_stocks()
+
+except Exception as error:
+    st.error(
+        f"米国株一覧の読み込みに失敗しました: {error}"
+    )
     st.stop()
 
 
@@ -82,11 +356,18 @@ st.markdown(
 
 st.subheader("銘柄選択")
 
+target_market = st.radio(
+    "対象市場",
+    ["日本株", "米国株"],
+    horizontal=True,
+    key="target_market",
+)
+
 selection_mode = "JPX一覧から選択"
 
 selected_jpx_tickers = []
 
-if selection_mode == "JPX一覧から選択":
+if target_market == "日本株":
 
     col1, col2, col3 = st.columns(3)
 
@@ -178,6 +459,142 @@ if selection_mode == "JPX一覧から選択":
 
     st.caption(
         f"検索結果：{len(filtered_jpx_df)}銘柄 ／ "
+        f"選択中：{len(selected_jpx_tickers)}銘柄"
+    )
+
+else:
+    filtered_us_df = us_df.copy()
+
+    # 1段目：取引所・セクター
+    col1, col2 = st.columns(2)
+
+    with col1:
+        exchange_options = (
+            ["すべて"]
+            + sorted(
+                filtered_us_df["取引所"]
+                .dropna()
+                .unique()
+                .tolist()
+            )
+        )
+
+        selected_exchange = st.selectbox(
+            "取引所",
+            exchange_options,
+            key="us_exchange",
+        )
+
+    if selected_exchange != "すべて":
+        filtered_us_df = filtered_us_df[
+            filtered_us_df["取引所"]
+            == selected_exchange
+        ]
+
+    with col2:
+        sector_options = (
+            ["すべて"]
+            + sorted(
+                filtered_us_df["セクター"]
+                .dropna()
+                .unique()
+                .tolist()
+            )
+        )
+
+        selected_sector = st.selectbox(
+            "セクター",
+            sector_options,
+            key="us_sector",
+        )
+
+    if selected_sector != "すべて":
+        filtered_us_df = filtered_us_df[
+            filtered_us_df["セクター"]
+            == selected_sector
+        ]
+
+    # 2段目：業種・銘柄検索
+    col3, col4 = st.columns(2)
+
+    with col3:
+        industry_options = (
+            ["すべて"]
+            + sorted(
+                filtered_us_df["業種"]
+                .dropna()
+                .unique()
+                .tolist()
+            )
+        )
+
+        selected_industry = st.selectbox(
+            "業種",
+            industry_options,
+            key="us_industry",
+        )
+
+    if selected_industry != "すべて":
+        filtered_us_df = filtered_us_df[
+            filtered_us_df["業種"]
+            == selected_industry
+        ]
+
+    with col4:
+        stock_keyword = st.text_input(
+            "銘柄名・ティッカー検索",
+            placeholder="例：NVIDIA、NVDA",
+            key="us_stock_keyword",
+        )
+
+    if stock_keyword.strip():
+        keyword = stock_keyword.strip()
+
+        ticker_match = (
+            filtered_us_df["ticker"]
+            .str.contains(
+                keyword,
+                case=False,
+                na=False,
+                regex=False,
+            )
+        )
+
+        name_match = (
+            filtered_us_df["銘柄名"]
+            .str.contains(
+                keyword,
+                case=False,
+                na=False,
+                regex=False,
+            )
+        )
+
+        filtered_us_df = filtered_us_df[
+            ticker_match | name_match
+        ]
+
+    selected_stock_names = st.multiselect(
+        "バックテストする銘柄",
+        options=filtered_us_df["表示名"].tolist(),
+        key="us_selected_stock_names",
+    )
+
+    selected_us_df = filtered_us_df[
+        filtered_us_df["表示名"].isin(
+            selected_stock_names
+        )
+    ]
+
+    # 後ろの既存処理との互換用
+    selected_jpx_df = selected_us_df.copy()
+
+    selected_jpx_tickers = (
+        selected_jpx_df["ticker"].tolist()
+    )
+
+    st.caption(
+        f"検索結果：{len(filtered_us_df)}銘柄 ／ "
         f"選択中：{len(selected_jpx_tickers)}銘柄"
     )
 
@@ -309,7 +726,15 @@ action_col1, action_col2, action_col3, action_col4 = st.columns(4)
 with action_col1:
     only_adopted = st.checkbox("採用候補のみ表示")
 
-INITIAL_CASH = 1_000_000
+if target_market == "日本株":
+    INITIAL_CASH = 1_000_000
+    CURRENCY_SYMBOL = "¥"
+    CURRENCY_NAME = "円"
+else:
+    INITIAL_CASH = 10_000
+    CURRENCY_SYMBOL = "$"
+    CURRENCY_NAME = "USD"
+
 FEE_RATE = 0.001
 TAX_RATE = 0.20315
 
@@ -746,8 +1171,8 @@ if st.session_state["result_df"] is not None:
             subset=["損益", "リターン%"]
         )
         .format({
-            "最終資産": "¥{:,.0f}",
-            "損益": "¥{:,.0f}",
+            "最終資産": f"{CURRENCY_SYMBOL}{{:,.0f}}",
+            "損益": f"{CURRENCY_SYMBOL}{{:,.0f}}",
             "リターン%": "{:.2f}",
             "最大下落率%": "{:.2f}",
         })
@@ -759,7 +1184,7 @@ if st.session_state["result_df"] is not None:
         risk_df.style
         .format({
             "最低保証金率%": "{:.2f}",
-            "最大追証額": "¥{:,.0f}",
+            "最大追証額": f"{CURRENCY_SYMBOL}{{:,.0f}}",
         })
     )
 
@@ -772,12 +1197,12 @@ if st.session_state["result_df"] is not None:
             subset=["損益", "リターン%"]
         )
         .format({
-            "最終資産": "¥{:,.0f}",
-            "損益": "¥{:,.0f}",
+            "最終資産": f"{CURRENCY_SYMBOL}{{:,.0f}}",
+            "損益": f"{CURRENCY_SYMBOL}{{:,.0f}}",
             "リターン%": "{:.2f}",
             "最大下落率%": "{:.2f}",
             "最低保証金率%": "{:.2f}",
-            "最大追証額": "¥{:,.0f}",
+            "最大追証額": f"{CURRENCY_SYMBOL}{{:,.0f}}",
         })
     )
 
