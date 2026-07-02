@@ -1299,18 +1299,55 @@ with action_col2:
         use_container_width=True
     )
 
+price_data_by_ticker = st.session_state.get(
+    "price_data_by_ticker",
+    {}
+)
+
 if run_backtest:
     results = []
     trade_histories_by_ticker = {}
     equity_curves_by_ticker = {}
+    price_data_by_ticker = {}
 
     for ticker in TICKERS:
         df = get_data(ticker, price_data_mode)
 
         if df is None or df.empty:
             continue
+        price_data_by_ticker[ticker] = df.copy()
+        st.session_state["price_data_by_ticker"] = price_data_by_ticker
 
         final_value, profit, return_rate,trade_count, max_drawdown,margin_call_count, max_margin_call_amount,min_margin_rate,forced_liquidation_count, trade_history, equity_history = backtest(df, price_data_mode)
+        
+        # 同じ期間に買って持ち続けた場合のリターン
+        first_price = df["Close"].iloc[0]
+        last_price = df["Close"].iloc[-1]
+
+        if hasattr(first_price, "iloc"):
+            first_price = first_price.iloc[0]
+        if hasattr(last_price, "iloc"):
+            last_price = last_price.iloc[0]
+
+        first_price = float(first_price)
+        last_price = float(last_price)
+
+        buy_hold_return = (last_price / first_price - 1) * 100
+        excess_return = return_rate - buy_hold_return
+
+                # 年平均リターン（CAGR）
+        start_date = pd.to_datetime(df.index[0])
+        end_date = pd.to_datetime(df.index[-1])
+        test_years = (end_date - start_date).days / 365.25
+
+        if test_years > 0 and final_value > 0:
+            cagr = (
+                (final_value / INITIAL_CASH) ** (1 / test_years)
+                - 1
+            ) * 100
+        else:
+            cagr = None
+
         trade_histories_by_ticker[ticker] = trade_history
         equity_curves_by_ticker[ticker] = pd.DataFrame(equity_history)
         rejection_reasons = []
@@ -1356,6 +1393,11 @@ if run_backtest:
           "最終資産": round(final_value),
             "損益": round(profit),
             "リターン%": round(return_rate, 2),
+            "年平均リターン%": (
+                round(cagr, 2) if cagr is not None else None
+            ),
+            "買い持ちリターン%": round(buy_hold_return, 2),
+            "超過リターン%": round(excess_return, 2),
             "取引回数": trade_count,
             "最大下落率%": round(max_drawdown, 2),
             "最低保証金率%": round(min_margin_rate * 100, 2),
@@ -1460,6 +1502,9 @@ if st.session_state["result_df"] is not None:
             "最終資産": f"{CURRENCY_SYMBOL}{{:,.0f}}",
             "損益": f"{CURRENCY_SYMBOL}{{:,.0f}}",
             "リターン%": "{:.2f}",
+            "年平均リターン%": "{:.2f}",
+            "買い持ちリターン%": "{:.2f}",
+            "超過リターン%": "{:.2f}",
             "最大下落率%": "{:.2f}",
         })
     )
@@ -1486,6 +1531,9 @@ if st.session_state["result_df"] is not None:
             "最終資産": f"{CURRENCY_SYMBOL}{{:,.0f}}",
             "損益": f"{CURRENCY_SYMBOL}{{:,.0f}}",
             "リターン%": "{:.2f}",
+            "年平均リターン%": "{:.2f}",
+            "買い持ちリターン%": "{:.2f}",
+            "超過リターン%": "{:.2f}",
             "最大下落率%": "{:.2f}",
             "最低保証金率%": "{:.2f}",
             "最大追証額": f"{CURRENCY_SYMBOL}{{:,.0f}}",
@@ -1523,13 +1571,39 @@ if st.session_state["result_df"] is not None:
         chart_df["日付"] = pd.to_datetime(chart_df["日付"])
         chart_df["初期資金"] = INITIAL_CASH
         chart_df = chart_df.set_index("日付")
+        price_df = price_data_by_ticker[chart_ticker].copy()
+
+        close_series = price_df["Close"]
+
+        if isinstance(close_series, pd.DataFrame):
+            close_series = close_series.iloc[:, 0]
+
+        close_series = pd.to_numeric(
+            close_series,
+            errors="coerce"
+        ).dropna()
+
+        close_series.index = pd.to_datetime(close_series.index)
+
+        buy_hold_series = (
+            INITIAL_CASH
+            * close_series
+            / close_series.iloc[0]
+        )
+
+        chart_df["買い持ち資産"] = (
+            buy_hold_series
+            .reindex(chart_df.index)
+            .ffill()
+            .bfill()
+        )
 
         chart_plot_df = (
             chart_df
             .reset_index()
             .melt(
                 id_vars="日付",
-                value_vars=["総資産", "初期資金"],
+                value_vars=["総資産", "買い持ち資産", "初期資金"],
                 var_name="項目",
                 value_name="金額",
             )
@@ -1599,6 +1673,10 @@ if st.session_state["result_df"] is not None:
                 color=alt.Color(
                     "項目:N",
                     title=None,
+                    scale=alt.Scale(
+                        domain=["総資産", "買い持ち資産", "初期資金"],
+                        range=["#1f77b4", "#ff7f0e", "#9aa0a6"],
+                    ),
                     legend=alt.Legend(orient="bottom"),
                 ),
                 tooltip=[
